@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>livedetect</title>
+<style>
+  :root { color-scheme: light dark; --line: #8884; --ok: #2e9d4f; --bad: #d1503f; }
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 0; padding: 20px; }
+  h1 { font-size: 18px; margin: 0 0 14px; display: flex; align-items: center; gap: 10px; }
+  main { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+  img { max-width: 100%; width: 640px; background: #0002; border: 1px solid var(--line); }
+  table { border-collapse: collapse; min-width: 260px; }
+  td, th { padding: 3px 12px 3px 0; text-align: left; font-variant-numeric: tabular-nums; }
+  th { font-weight: 600; border-bottom: 1px solid var(--line); }
+  td.num, th.num { text-align: right; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; margin: 18px 0 6px; opacity: .7; }
+  h2:first-child { margin-top: 0; }
+  #state { font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 10px; color: #fff; background: var(--bad); }
+  #state.running { background: var(--ok); }
+</style>
+</head>
+<body>
+<h1>livedetect <span id="state">connecting</span></h1>
+<main>
+  <img src="/video.mjpg" alt="Live video with tracked objects">
+  <section>
+    <h2>Pipeline</h2>
+    <table id="metrics"></table>
+    <h2>Tracks</h2>
+    <table>
+      <thead><tr><th>id</th><th class="num">x</th><th class="num">y</th><th class="num">speed px/s</th><th>label</th></tr></thead>
+      <tbody id="tracks"></tbody>
+    </table>
+  </section>
+</main>
+<script>
+const rows = [
+  ["Frames in / s", m => m.fps_in],
+  ["Results out / s", m => m.fps_out],
+  ["Latency p50 / p95 (ms)", m => m.latency_ms ? `${m.latency_ms.p50} / ${m.latency_ms.p95}` : "-"],
+  ["Processing p50 (ms)", m => m.processing_ms ? m.processing_ms.p50 : "-"],
+  ["Frames dropped", m => `${m.dropped} of ${m.captured}`],
+  ["Reconnects", m => m.reconnects],
+  ["Uptime (s)", m => m.uptime_s],
+];
+
+async function refreshMetrics() {
+  const state = document.getElementById("state");
+  try {
+    const m = await (await fetch("/metrics")).json();
+    state.textContent = m.state;
+    state.className = m.state;
+    document.getElementById("metrics").innerHTML =
+      rows.map(([name, value]) => `<tr><td>${name}</td><td class="num">${value(m)}</td></tr>`).join("");
+  } catch {
+    state.textContent = "server unreachable";
+    state.className = "";
+  }
+}
+setInterval(refreshMetrics, 500);
+refreshMetrics();
+
+// EventSource reconnects by itself if the server restarts.
+new EventSource("/events").onmessage = event => {
+  const result = JSON.parse(event.data);
+  document.getElementById("tracks").innerHTML = result.tracks.map(t =>
+    `<tr><td>#${t.id}</td><td class="num">${t.cx.toFixed(0)}</td><td class="num">${t.cy.toFixed(0)}</td>` +
+    `<td class="num">${Math.hypot(t.vx, t.vy).toFixed(0)}</td><td>${t.coasting ? "predicted" : t.label}</td></tr>`
+  ).join("");
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+stages:
+  - lint
+  - test
+
+default:
+  image: python:3.12-slim
+  cache:
+    paths:
+      - .cache/pip
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+lint:
+  stage: lint
+  script:
+    - pip install ruff
+    - ruff check .
+    - ruff format --check .
+
+# Runs everything except the GStreamer and PyTorch tests, which skip themselves
+# when those libraries are missing.
+test:
+  stage: test
+  script:
+    - pip install -e ".[dev]"
+    - pytest -v --junitxml=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+
+# The same suite inside the distribution the Docker image is built on, with
+# GStreamer installed, so the stream-reading code is exercised too.
+test-gstreamer:
+  stage: test
+  image: ubuntu:24.04
+  variables:
+    DEBIAN_FRONTEND: noninteractive
+  script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends python3 python3-venv python3-gi
+        gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+        gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav
+    - python3 -m venv --system-site-packages .venv
+    - .venv/bin/pip install -e ".[dev]"
+    - .venv/bin/pytest -v

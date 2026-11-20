@@ -1,0 +1,23 @@
+services:
+  # A stand-in network camera: H.264 in MPEG-TS over TCP. Stop and start this
+  # container to watch the service lose and regain its stream.
+  camera:
+    build: .
+    image: livedetect:dev
+    entrypoint: ["python3", "-m", "livedetect.fakecam"]
+    command: ["--source", "${CAMERA_SOURCE:-synthetic}", "--port", "5000"]
+    volumes:
+      - ./clips:/clips:ro
+    healthcheck:
+      disable: true
+
+  livedetect:
+    build: .
+    image: livedetect:dev
+    environment:
+      LIVEDETECT_SOURCE: "gst:tcpclientsrc host=camera port=5000 ! tsdemux ! h264parse ! avdec_h264"
+      LIVEDETECT_DETECTOR: ${LIVEDETECT_DETECTOR:-motion}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - camera
