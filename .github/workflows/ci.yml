@@ -10,7 +10,7 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install GStreamer
         run: |
           sudo apt-get update
@@ -37,7 +37,7 @@ jobs:
   docker:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build and start
         run: docker compose up --build -d
       - name: Service becomes healthy

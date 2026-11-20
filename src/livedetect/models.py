@@ -71,6 +71,10 @@ def fetch(name: str) -> Path:
     if actual != model.sha256:
         partial_path.unlink()
         raise RuntimeError(f"{name} model has SHA-256 {actual}, expected {model.sha256}")
+    # NamedTemporaryFile makes the file readable by its owner only. Weights are
+    # not secret, and the container downloads them as root at build time and
+    # reads them as another user at run time.
+    partial_path.chmod(0o644)
     partial_path.replace(path)
     return path
 

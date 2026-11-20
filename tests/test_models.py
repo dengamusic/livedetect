@@ -30,6 +30,11 @@ def test_fetch_downloads_then_serves_from_the_cache(remote, tmp_path):
     assert models.fetch("toy") == path
 
 
+def test_a_downloaded_model_is_readable_by_other_users(remote):
+    # The container downloads the model as root and runs as another user.
+    assert models.fetch("toy").stat().st_mode & 0o777 == 0o644
+
+
 def test_fetch_rejects_a_download_with_the_wrong_checksum(remote, tmp_path):
     _, register = remote
     register("0" * 64)
