@@ -33,7 +33,7 @@ def test_one_frame_of_noise_is_never_reported():
 
 
 def test_track_coasts_through_missed_detections():
-    tracker = Tracker(max_misses=10)
+    tracker = Tracker(max_coast_s=10.5 * DT)
     for i in range(10):
         tracker.update([detection(100 + 4 * i, 50)], i * DT)
     for i in range(10, 15):  # detector misses five frames
@@ -44,8 +44,8 @@ def test_track_coasts_through_missed_detections():
     assert track.id == 1 and not track.coasting
 
 
-def test_track_is_dropped_after_max_misses():
-    tracker = Tracker(max_misses=3)
+def test_track_is_dropped_once_it_has_coasted_too_long():
+    tracker = Tracker(max_coast_s=3.5 * DT)
     for i in range(5):
         tracker.update([detection(100, 50)], i * DT)
     seen = [len(tracker.update([], i * DT)) for i in range(5, 10)]
@@ -70,3 +70,29 @@ def test_long_gap_discards_stale_tracks():
     for i in range(5):
         tracker.update([detection(100, 50)], i * DT)
     assert tracker.update([detection(100, 50)], 60.0) == []  # after a reconnect, start again
+
+
+def test_coasting_is_limited_by_time_not_by_frame_count():
+    # The same half second without a detection, at 30 and at 5 frames a second.
+    for fps in (30, 5):
+        tracker = Tracker(max_coast_s=0.5)
+        for i in range(5):
+            tracker.update([detection(100, 50)], i / fps)
+        last = 4 / fps
+        assert len(tracker.update([], last + 0.4)) == 1, fps
+        assert len(tracker.update([], last + 0.6)) == 0, fps
+
+
+def test_a_reacquired_target_does_not_get_a_burst_of_false_speed():
+    # Seen in one frame out of four, standing still, with the detector's box
+    # two pixels off each time. The speed estimate must stay small.
+    tracker = Tracker(max_coast_s=1.0)
+    for i in range(12):
+        tracker.update([detection(100, 50)], i * DT)
+    speeds = []
+    for i in range(12, 120):
+        offset = 2.0 if (i // 4) % 2 else -2.0
+        found = [detection(100 + offset, 50)] if i % 4 == 0 else []
+        (track,) = tracker.update(found, i * DT)
+        speeds.append(abs(track.vx))
+    assert max(speeds) < 20  # px/s; dividing the error by one frame time gives about 70

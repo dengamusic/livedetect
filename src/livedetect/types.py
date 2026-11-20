@@ -40,22 +40,39 @@ class Track:
 
 
 @dataclass(frozen=True, slots=True)
+class View:
+    """The part of the frame the tracking camera is looking at."""
+
+    cx: float  # centre of the window, frame pixels
+    cy: float
+    w: float  # size of the window, frame pixels
+    h: float
+    zoom: float  # frame width / window width
+    target: int | None  # id of the track being followed, None while searching
+
+
+@dataclass(frozen=True, slots=True)
 class Result:
     frame: Frame
     tracks: tuple[Track, ...]
     n_detections: int
     processing_s: float  # detector plus tracker
     latency_s: float  # frame captured -> result ready
+    view: View | None = None
 
     def to_dict(self) -> dict:
         """JSON-ready summary, without the image."""
         return {
             "seq": self.frame.seq,
+            "width": self.frame.image.shape[1],
+            "height": self.frame.image.shape[0],
             "latency_ms": round(self.latency_s * 1e3, 2),
             "processing_ms": round(self.processing_s * 1e3, 2),
             "detections": self.n_detections,
-            "tracks": [
-                {k: round(v, 2) if isinstance(v, float) else v for k, v in asdict(t).items()}
-                for t in self.tracks
-            ],
+            "view": None if self.view is None else _rounded(asdict(self.view)),
+            "tracks": [_rounded(asdict(t)) for t in self.tracks],
         }
+
+
+def _rounded(values: dict) -> dict:
+    return {k: round(v, 2) if isinstance(v, float) else v for k, v in values.items()}

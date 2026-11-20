@@ -1,7 +1,7 @@
 import threading
 import time
 
-from livedetect.buffers import Broadcast, LatestSlot
+from livedetect.buffers import Broadcast, FifoQueue, LatestSlot
 
 
 def test_slot_returns_what_was_put():
@@ -43,6 +43,36 @@ def test_slot_close_wakes_a_waiting_reader():
     reader.join(timeout=2)
     assert received == [None]
     assert slot.closed
+
+
+def test_slot_reports_and_clears_what_is_waiting():
+    slot = LatestSlot()
+    assert slot.size == 0 and slot.clear() == 0
+    slot.put("a")
+    assert slot.size == 1 and slot.clear() == 1
+    assert slot.get(timeout=0) is None
+
+
+def test_queue_returns_items_in_order_and_turns_new_ones_away_when_full():
+    queue = FifoQueue(capacity=2)
+    assert queue.put("a") is False
+    assert queue.put("b") is False
+    assert queue.put("c") is True  # full: "c" is discarded, not "a"
+    assert queue.size == 2
+    assert [queue.get(timeout=0), queue.get(timeout=0), queue.get(timeout=0)] == ["a", "b", None]
+
+
+def test_queue_clear_and_close():
+    queue = FifoQueue(capacity=5)
+    for item in "abc":
+        queue.put(item)
+    assert queue.clear() == 3
+    received = []
+    reader = threading.Thread(target=lambda: received.append(queue.get(timeout=5)))
+    reader.start()
+    queue.close()
+    reader.join(timeout=2)
+    assert received == [None] and queue.closed
 
 
 def test_broadcast_delivers_to_every_subscriber():

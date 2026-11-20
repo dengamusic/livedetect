@@ -4,71 +4,361 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>livedetect</title>
+<link rel="icon" href="data:,">
 <style>
-  :root { color-scheme: light dark; --line: #8884; --ok: #2e9d4f; --bad: #d1503f; }
-  body { font: 14px/1.4 system-ui, sans-serif; margin: 0; padding: 20px; }
-  h1 { font-size: 18px; margin: 0 0 14px; display: flex; align-items: center; gap: 10px; }
-  main { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
-  img { max-width: 100%; width: 800px; background: #0002; border: 1px solid var(--line); }
-  table { border-collapse: collapse; min-width: 260px; }
-  td, th { padding: 3px 12px 3px 0; text-align: left; font-variant-numeric: tabular-nums; }
-  th { font-weight: 600; border-bottom: 1px solid var(--line); }
-  td.num, th.num { text-align: right; }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; margin: 18px 0 6px; opacity: .7; }
-  h2:first-child { margin-top: 0; }
-  #state { font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 10px; color: #fff; background: var(--bad); }
-  #state.running { background: var(--ok); }
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --border: rgba(11, 11, 11, .10);
+    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7;
+    --series-1: #2a78d6; --series-2: #eb6834;   /* checked for colour-blind separation */
+    --good: #0ca30c; --critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --border: rgba(255, 255, 255, .10);
+      --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835;
+      --series-1: #3987e5; --series-2: #d95926;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0 auto; padding: 14px 20px;
+         max-width: 1640px; background: var(--page); color: var(--ink); }
+  h1 { font-size: 18px; margin: 0 0 12px; display: flex; align-items: center; gap: 12px; }
+  h2 { font-size: 13px; font-weight: 600; margin: 0; }
+  .muted { color: var(--ink-2); font-size: 12px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+
+  #state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600;
+           padding: 2px 10px 2px 8px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+  #state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--critical); }
+  #state.running::before { background: var(--good); }
+
+  /* Three columns: the whole frame, the tracking camera with its numbers, the last minute. */
+  main { display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr) minmax(0, .8fr); gap: 16px; align-items: start; }
+  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+  main img { display: block; width: 100%; background: #0002; border: 1px solid var(--border); border-radius: 8px; }
+  #video { cursor: crosshair; }
+  aside, #charts { display: grid; gap: 12px; }
+  figure { margin: 0; }
+  figcaption { margin-top: 4px; }
+
+  table { border-collapse: collapse; width: 100%; }
+  td, th { padding: 2px 12px 2px 0; text-align: left; font-variant-numeric: tabular-nums; }
+  th { font-weight: 600; font-size: 12px; color: var(--ink-2); border-bottom: 1px solid var(--grid); }
+  td.num, th.num { text-align: right; padding-right: 0; }
+  td + td.num, th + th.num { padding-left: 12px; }
+
+  .chart header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; white-space: nowrap; }
+  .chart .now { display: flex; gap: 14px; font-variant-numeric: tabular-nums; }
+  .chart .now b { font-weight: 600; }
+  .key { display: inline-block; width: 14px; height: 2px; border-radius: 1px; vertical-align: middle; margin-right: 5px; }
+  .chart svg { display: block; width: 100%; height: 84px; margin-top: 6px; outline: none; }
+  .chart svg:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+  .chart text { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+  #tip { position: fixed; pointer-events: none; z-index: 1; padding: 6px 9px; font-size: 12px; white-space: nowrap;
+         background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+         box-shadow: 0 2px 8px rgba(0, 0, 0, .15); font-variant-numeric: tabular-nums; }
+  #tip b { font-weight: 600; margin-right: 6px; }
+
+  #controls { margin-top: 14px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+  @media (max-width: 1000px) { #controls { grid-template-columns: 1fr 1fr; } }
+  #controls[hidden], .switch[hidden] { display: none; }
+  .buttons { display: inline-flex; margin: 6px 0; border: 1px solid var(--axis); border-radius: 6px; overflow: hidden; }
+  .buttons button { font: inherit; font-size: 13px; padding: 4px 11px; border: 0; background: transparent; color: var(--ink); cursor: pointer; }
+  .buttons button + button { border-left: 1px solid var(--axis); }
+  .buttons button:hover { background: var(--grid); }
+  .buttons button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
 </style>
 </head>
 <body>
 <h1>livedetect <span id="state">connecting</span></h1>
+
 <main>
-  <img src="/video.mjpg" alt="Live video with tracked objects">
-  <section>
-    <h2>Pipeline</h2>
-    <table id="metrics"></table>
-    <h2>Tracks</h2>
-    <table>
-      <thead><tr><th>id</th><th class="num">x</th><th class="num">y</th><th class="num">speed px/s</th><th>label</th></tr></thead>
-      <tbody id="tracks"></tbody>
-    </table>
-  </section>
+  <figure>
+    <img id="video" src="/video.mjpg" alt="Live video with a box on every tracked object">
+    <figcaption class="muted">The whole frame. The white rectangle is what the tracking camera sees. Click a target to follow it.</figcaption>
+  </figure>
+  <aside>
+    <figure>
+      <img src="/follow.mjpg" alt="The tracking camera's enlarged view of the followed target">
+      <figcaption class="muted" id="following">Tracking camera</figcaption>
+    </figure>
+    <div class="card">
+      <table id="metrics"></table>
+    </div>
+    <div class="card">
+      <table>
+        <thead><tr><th>Track</th><th class="num">x</th><th class="num">y</th><th class="num">px/s</th><th class="num">score</th></tr></thead>
+        <tbody id="tracks"></tbody>
+      </table>
+    </div>
+  </aside>
+  <section id="charts" aria-label="The last 60 seconds"></section>
 </main>
+
+<section id="controls" hidden aria-label="Switches">
+  <div class="card switch" data-control="detector_delay_ms">
+    <h2>Detector</h2>
+    <div class="buttons">
+      <button data-value="0">normal</button><button data-value="100">+100 ms</button><button data-value="300">+300 ms</button>
+    </div>
+    <div class="muted">Slower than the camera: frames are dropped and latency stays bounded.</div>
+  </div>
+  <div class="card switch" data-control="camera_cut">
+    <h2>Camera</h2>
+    <div class="buttons">
+      <button data-value="false">connected</button><button data-value="true">cut</button>
+    </div>
+    <div class="muted">Cut: retries with growing pauses. Connected: back at the next retry, 8 s at most.</div>
+  </div>
+  <div class="card switch" data-control="queue">
+    <h2>Hand-over to the detector</h2>
+    <div class="buttons">
+      <button data-value="false">newest frame</button><button data-value="true">queue of 30</button>
+    </div>
+    <div class="muted">The queue is the design this service avoids. Slow the detector, then compare the latency.</div>
+  </div>
+  <div class="card switch" data-control="tiles">
+    <h2>Tiles</h2>
+    <div class="buttons">
+      <button data-value='"1x1"'>off</button><button data-value='"3x2"'>3 × 2</button><button data-value='"5x3"'>5 × 3</button>
+    </div>
+    <div class="muted">Finds smaller targets, at one more network run per tile.</div>
+  </div>
+</section>
+
+<div id="tip" hidden></div>
+
 <script>
+const $ = id => document.getElementById(id);
+const SVG = "http://www.w3.org/2000/svg";
+
+// Build elements with textContent only: labels come from the model file, not from us.
+function node(tag, attrs = {}, ...children) {
+  const svg = ["svg", "path", "line", "circle", "text"].includes(tag);
+  const e = svg ? document.createElementNS(SVG, tag) : document.createElement(tag);
+  for (const [name, value] of Object.entries(attrs)) e.setAttribute(name, value);
+  e.append(...children);
+  return e;
+}
+
+// ---------------------------------------------------------------- charts
+const HISTORY = 120;        // samples kept: 60 s at one every 500 ms
+const SAMPLE_S = 0.5;
+const history = [];
+
+function niceCeiling(value) {  // 37 -> 50, 180 -> 200, 1200 -> 2000
+  const power = 10 ** Math.floor(Math.log10(value));
+  return [1, 2, 5, 10].map(m => m * power).find(c => c >= value);
+}
+// Axis ticks: in full below 10,000, in thousands on an axis that reaches it. One style per axis.
+const tickLabel = (v, max) => max >= 10000 ? (v ? `${+(v / 1000).toFixed(1)}K` : "0") : v.toLocaleString("en");
+
+class Chart {
+  // series: [{name, colour, value: sample => number | null}]
+  constructor({title, unit, series, floor, max}) {
+    Object.assign(this, {unit, series, floor, max, hover: null});
+    this.now = node("div", {class: "now"});
+    this.svg = node("svg", {tabindex: "0", role: "img", "aria-label": `${title}, last 60 seconds`});
+    $("charts").append(node("div", {class: "card chart"},
+      node("header", {}, node("h2", {}, title), this.now), this.svg));
+    this.svg.addEventListener("pointermove", e => this.point(e));
+    this.svg.addEventListener("pointerleave", () => this.setHover(null));
+    this.svg.addEventListener("blur", () => this.setHover(null));
+    this.svg.addEventListener("keydown", e => {
+      const step = {ArrowLeft: -1, ArrowRight: 1}[e.key];
+      if (!step || !history.length) return;
+      e.preventDefault();
+      const from = this.hover ?? history.length - 1;
+      this.setHover(Math.max(0, Math.min(history.length - 1, from + step)));
+    });
+  }
+
+  format(v) {   // 12.4 ms, 337 ms, 9,709 ms
+    if (v == null) return "–";
+    const shown = v >= 100 ? Math.round(v) : Math.round(v * 10) / 10;
+    return `${shown.toLocaleString("en")} ${this.unit}`.trim();
+  }
+
+  draw() {
+    const W = this.svg.clientWidth || 320, H = 84;
+    const left = 34, right = 8, top = 6, bottom = 16;
+    const plotW = W - left - right, plotH = H - top - bottom;
+    const values = history.flatMap(s => this.series.map(k => k.value(s))).filter(v => v != null);
+    const max = this.max ?? niceCeiling(Math.max(this.floor, ...values));
+    // The newest sample sits at the right edge; a short history starts mid-chart.
+    this.x = i => left + plotW * (HISTORY - history.length + i) / (HISTORY - 1);
+    const y = v => top + plotH * (1 - Math.min(v, max) / max);
+    this.svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    this.svg.replaceChildren();
+
+    for (const tick of [0, max / 2, max]) {
+      this.svg.append(
+        node("line", {x1: left, x2: W - right, y1: y(tick), y2: y(tick),
+                      stroke: tick ? "var(--grid)" : "var(--axis)", "stroke-width": 1}),
+        node("text", {x: left - 6, y: y(tick) + 4, "text-anchor": "end"}, tickLabel(tick, max)));
+    }
+    this.svg.append(
+      node("text", {x: left, y: H - 2}, "60 s ago"),
+      node("text", {x: W - right, y: H - 2, "text-anchor": "end"}, "now"));
+
+    if (this.hover != null && this.hover < history.length) {
+      const hx = this.x(this.hover);
+      this.svg.append(node("line", {x1: hx, x2: hx, y1: top, y2: top + plotH, stroke: "var(--muted)", "stroke-width": 1}));
+    }
+    for (const k of this.series) {
+      let path = "", pen = "M";
+      history.forEach((sample, i) => {
+        const v = k.value(sample);
+        if (v == null) { pen = "M"; return; }   // a gap: nothing was measured
+        path += `${pen}${this.x(i).toFixed(1)},${y(v).toFixed(1)}`;
+        pen = "L";
+      });
+      this.svg.append(node("path", {d: path, fill: "none", stroke: k.colour, "stroke-width": 2,
+                                    "stroke-linejoin": "round", "stroke-linecap": "round"}));
+      const marked = history[this.hover ?? history.length - 1];
+      const v = marked ? k.value(marked) : null;
+      if (v != null) {
+        this.svg.append(node("circle", {cx: this.x(this.hover ?? history.length - 1), cy: y(v), r: 4,
+                                        fill: k.colour, stroke: "var(--surface)", "stroke-width": 2}));
+      }
+    }
+
+    // Current values in the header; with two series they double as the legend.
+    const latest = history.at(-1);
+    this.now.replaceChildren(...this.series.map(k => {
+      const item = node("span");
+      if (this.series.length > 1) item.append(node("span", {class: "key", style: `background:${k.colour}`}), `${k.name} `);
+      item.append(node("b", {}, this.format(latest ? k.value(latest) : null)));
+      return item;
+    }));
+  }
+
+  point(event) {
+    if (!history.length) return;
+    const px = event.clientX - this.svg.getBoundingClientRect().left;
+    let nearest = 0;
+    history.forEach((_, i) => { if (Math.abs(this.x(i) - px) < Math.abs(this.x(nearest) - px)) nearest = i; });
+    this.setHover(nearest);
+  }
+
+  setHover(index) {
+    this.hover = index;
+    this.draw();
+    const tip = $("tip");
+    tip.hidden = index == null;
+    if (index == null) return;
+    const ago = Math.round((history.length - 1 - index) * SAMPLE_S);
+    tip.replaceChildren(node("div", {class: "muted"}, ago === 0 ? "now" : `${ago} s ago`),
+      ...this.series.map(k => node("div", {},
+        node("span", {class: "key", style: `background:${k.colour}`}),
+        node("b", {}, this.format(k.value(history[index]))), k.name)));
+    const box = this.svg.getBoundingClientRect();
+    const x = box.left + this.x(index);
+    tip.style.left = `${Math.min(x + 12, window.innerWidth - tip.offsetWidth - 8)}px`;
+    tip.style.top = `${box.top - tip.offsetHeight - 6}px`;
+  }
+}
+
+const charts = [
+  new Chart({title: "Latency", unit: "ms", floor: 50,
+             series: [{name: "frame in to result out", colour: "var(--series-1)", value: s => s.latency}]}),
+  new Chart({title: "Frames / s", unit: "", floor: 30,
+             series: [{name: "camera", colour: "var(--series-1)", value: s => s.fps_in},
+                      {name: "results", colour: "var(--series-2)", value: s => s.fps_out}]}),
+  new Chart({title: "Frames with a detection", unit: "%", floor: 100, max: 100,
+             series: [{name: "of the last 2 s", colour: "var(--series-1)", value: s => s.found}]}),
+];
+addEventListener("resize", () => charts.forEach(c => c.draw()));
+
+// --------------------------------------------------------------- numbers
 const rows = [
-  ["Frames in / s", m => m.fps_in],
-  ["Results out / s", m => m.fps_out],
-  ["Latency p50 / p95 (ms)", m => m.latency_ms ? `${m.latency_ms.p50} / ${m.latency_ms.p95}` : "-"],
-  ["Processing p50 (ms)", m => m.processing_ms ? m.processing_ms.p50 : "-"],
-  ["Frames dropped", m => `${m.dropped} of ${m.captured}`],
-  ["Reconnects", m => m.reconnects],
-  ["Uptime (s)", m => m.uptime_s],
+  ["Detector time (ms, median of 10 s)", m => m.processing_ms ? m.processing_ms.p50 : "–"],
+  ["Latency (ms, 95th percentile of 10 s)", m => m.latency_ms ? m.latency_ms.p95 : "–"],
+  ["Frames dropped", m => `${m.dropped.toLocaleString("en")} of ${m.captured.toLocaleString("en")}`],
+  ["Frames waiting for the detector", m => m.waiting],
+  ["Stream restarts (a clip looping counts)", m => m.reconnects],
+  ["Uptime (s)", m => m.uptime_s.toFixed(0)],
 ];
 
 async function refreshMetrics() {
-  const state = document.getElementById("state");
+  const state = $("state");
   try {
     const m = await (await fetch("/metrics")).json();
     state.textContent = m.state;
     state.className = m.state;
-    document.getElementById("metrics").innerHTML =
-      rows.map(([name, value]) => `<tr><td>${name}</td><td class="num">${value(m)}</td></tr>`).join("");
+    $("metrics").replaceChildren(...rows.map(([name, value]) =>
+      node("tr", {}, node("td", {}, name), node("td", {class: "num"}, String(value(m))))));
+    const flowing = m.fps_out > 0;   // with nothing coming out, the last latency is old news
+    history.push({
+      latency: flowing ? m.latency_now_ms : null,
+      fps_in: m.fps_in, fps_out: m.fps_out,
+      found: flowing && m.detection_rate != null ? m.detection_rate * 100 : null,
+    });
+    if (history.length > HISTORY) history.shift();
+    charts.forEach(c => c.hover == null ? c.draw() : c.setHover(Math.max(0, c.hover - (history.length === HISTORY))));
   } catch {
     state.textContent = "server unreachable";
     state.className = "";
   }
 }
-setInterval(refreshMetrics, 500);
+setInterval(refreshMetrics, SAMPLE_S * 1000);
 refreshMetrics();
 
+// ------------------------------------------------- tracks and the camera
+let frameSize = null;
 // EventSource reconnects by itself if the server restarts.
 new EventSource("/events").onmessage = event => {
   const result = JSON.parse(event.data);
-  document.getElementById("tracks").innerHTML = result.tracks.map(t =>
-    `<tr><td>#${t.id}</td><td class="num">${t.cx.toFixed(0)}</td><td class="num">${t.cy.toFixed(0)}</td>` +
-    `<td class="num">${Math.hypot(t.vx, t.vy).toFixed(0)}</td><td>${t.coasting ? "predicted" : t.label}</td></tr>`
-  ).join("");
+  frameSize = [result.width, result.height];
+  $("tracks").replaceChildren(...result.tracks.map(t => node("tr", {},
+    node("td", {}, `#${t.id} ${t.coasting ? "predicted" : t.label}`),
+    node("td", {class: "num"}, t.cx.toFixed(0)),
+    node("td", {class: "num"}, t.cy.toFixed(0)),
+    node("td", {class: "num"}, Math.hypot(t.vx, t.vy).toFixed(0)),
+    node("td", {class: "num"}, t.score.toFixed(2)))));
+  const view = result.view;
+  $("following").textContent = !view ? "Tracking camera"
+    : view.target == null ? `Tracking camera: searching, ${view.zoom.toFixed(1)}× zoom`
+    : `Tracking camera: following #${view.target} at ${view.zoom.toFixed(1)}× zoom`;
 };
+
+$("video").addEventListener("click", event => {
+  if (!frameSize) return;
+  const box = event.currentTarget.getBoundingClientRect();
+  fetch("/follow", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({x: (event.clientX - box.left) / box.width * frameSize[0],
+                          y: (event.clientY - box.top) / box.height * frameSize[1]}),
+  });
+});
+
+// -------------------------------------------------------------- switches
+function showControls(state) {
+  $("controls").hidden = !state.enabled;
+  for (const group of document.querySelectorAll(".switch")) {
+    const current = state[group.dataset.control];
+    group.hidden = current == null;   // e.g. the motion detector has no tiles
+    for (const button of group.querySelectorAll("button")) {
+      button.setAttribute("aria-pressed", String(JSON.parse(button.dataset.value) === current));
+    }
+  }
+}
+async function refreshControls() {
+  try { showControls(await (await fetch("/controls")).json()); } catch { /* the badge already says so */ }
+}
+document.querySelectorAll(".switch button").forEach(button => button.addEventListener("click", async () => {
+  const change = {[button.closest(".switch").dataset.control]: JSON.parse(button.dataset.value)};
+  const response = await fetch("/controls", {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(change),
+  });
+  if (response.ok) showControls(await response.json());
+}));
+setInterval(refreshControls, 3000);   // another viewer may have flipped a switch
+refreshControls();
 </script>
 </body>
 </html>

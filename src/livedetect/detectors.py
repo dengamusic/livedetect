@@ -1,13 +1,16 @@
 """Detectors: image in, list of detections out.
 
-`MotionDetector` needs no model and no GPU. `TorchvisionDetector` wraps a
-pretrained network. The pipeline only knows the `Detector` interface, so a
-different model is one new class.
+`MotionDetector` needs no model and no GPU. `TorchvisionDetector` and
+`OnnxYoloDetector` wrap trained networks. `TiledDetector` wraps any of those
+to find targets that are too small for the network at full-frame scale. The
+pipeline only knows the `Detector` interface, so a different model is one new
+class.
 """
 
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
@@ -237,13 +240,117 @@ def decode_yolo(
     ]
 
 
-def make_detector(name: str, score_threshold: float = 0.4) -> Detector:
+class TiledDetector:
+    """Runs another detector on overlapping tiles of the frame, to find small targets.
+
+    A network looks at its input at a fixed size, 416 pixels for the drone
+    model. A 960-pixel frame is shrunk to less than half for it, so a drone 12
+    pixels wide arrives 5 pixels wide. A tile is a part of the frame, shown to
+    the network at closer to its real resolution.
+
+    The whole frame is still run once, for targets too large to fit in a tile,
+    so a grid of `cols` x `rows` costs `cols * rows + 1` network runs per frame.
+    `grid` may be changed while the detector is in use; (1, 1) turns tiling off.
+    """
+
+    def __init__(self, inner: Detector, cols: int = 1, rows: int = 1, overlap: float = 0.2) -> None:
+        self.inner = inner
+        self.grid = (cols, rows)
+        self.overlap = overlap  # fraction of a tile shared with its neighbour
+
+    def detect(self, image: np.ndarray) -> list[Detection]:
+        cols, rows = self.grid  # read once: another thread may change it
+        detections = list(self.inner.detect(image))
+        if (cols, rows) == (1, 1):
+            return detections
+        height, width = image.shape[:2]
+        for x0, y0, x1, y1 in tile_boxes(width, height, cols, rows, self.overlap):
+            for d in self.inner.detect(image[y0:y1, x0:x1]):
+                d = replace(d, cx=d.cx + x0, cy=d.cy + y0)  # tile -> frame coordinates
+                if not _cut_by_tile(d, (x0, y0, x1, y1), width, height):
+                    detections.append(d)
+        return merge_detections(detections)
+
+
+def tile_boxes(
+    width: int, height: int, cols: int, rows: int, overlap: float = 0.2
+) -> list[tuple[int, int, int, int]]:
+    """Corners (x0, y0, x1, y1) of a grid of equal tiles that covers the frame.
+
+    Neighbouring tiles share `overlap` of their size, so a target on the edge
+    of one tile is whole in the next.
+    """
+
+    def spans(length: int, count: int) -> list[tuple[int, int]]:
+        size = length / (count - (count - 1) * overlap)
+        starts = [round(i * size * (1 - overlap)) for i in range(count)]
+        return [(start, min(length, round(start + size))) for start in starts]
+
+    return [(x0, y0, x1, y1) for y0, y1 in spans(height, rows) for x0, x1 in spans(width, cols)]
+
+
+def _cut_by_tile(
+    d: Detection, tile: tuple[int, int, int, int], width: int, height: int, margin: float = 2.0
+) -> bool:
+    """True if the box touches a tile edge that is not also an edge of the frame.
+
+    Such a box is probably part of a target that continues outside the tile.
+    The neighbouring tile or the whole-frame run sees it complete.
+    """
+    x0, y0, x1, y1 = tile
+    return (
+        (x0 > 0 and d.cx - d.w / 2 <= x0 + margin)
+        or (y0 > 0 and d.cy - d.h / 2 <= y0 + margin)
+        or (x1 < width and d.cx + d.w / 2 >= x1 - margin)
+        or (y1 < height and d.cy + d.h / 2 >= y1 - margin)
+    )
+
+
+def merge_detections(detections: list[Detection]) -> list[Detection]:
+    """Keep the best-scoring box of each target that was found more than once.
+
+    Two boxes count as the same target when the centre of either lies inside
+    the other. Overlap ratios, the usual test, are unreliable for boxes a few
+    pixels wide: the same drone seen at two scales gives boxes of different
+    sizes that share little area.
+    """
+    kept: list[Detection] = []
+    for d in sorted(detections, key=lambda d: d.score, reverse=True):
+        if not any(_centre_inside(d, k) or _centre_inside(k, d) for k in kept):
+            kept.append(d)
+    return kept
+
+
+def _centre_inside(a: Detection, b: Detection) -> bool:
+    return abs(a.cx - b.cx) <= b.w / 2 and abs(a.cy - b.cy) <= b.h / 2
+
+
+def parse_grid(text: str) -> tuple[int, int]:
+    """'3x2' -> (3, 2): columns, then rows."""
+    try:
+        cols, rows = (int(part) for part in text.lower().split("x"))
+    except ValueError:
+        raise ValueError(f"tiles must look like 3x2 (columns x rows), not {text!r}") from None
+    if not (1 <= cols <= 8 and 1 <= rows <= 8):
+        raise ValueError(f"tiles must be between 1x1 and 8x8, not {text!r}")
+    return cols, rows
+
+
+def make_detector(
+    name: str, score_threshold: float = 0.4, tiles: tuple[int, int] = (1, 1)
+) -> Detector:
     if name == "motion":
+        if tiles != (1, 1):
+            # It compares each frame with a remembered background of the same size.
+            raise ValueError("the motion detector cannot be tiled")
         return MotionDetector()
     if name == "drone":
         from livedetect.models import fetch
 
-        return OnnxYoloDetector(fetch("drone"), score_threshold=score_threshold)
-    if name in TorchvisionDetector._MODELS:
-        return TorchvisionDetector(model=name, score_threshold=score_threshold)
-    raise ValueError(f"unknown detector {name!r}; choose motion, drone, ssdlite or fasterrcnn")
+        network: Detector = OnnxYoloDetector(fetch("drone"), score_threshold=score_threshold)
+    elif name in TorchvisionDetector._MODELS:
+        network = TorchvisionDetector(model=name, score_threshold=score_threshold)
+    else:
+        raise ValueError(f"unknown detector {name!r}; choose motion, drone, ssdlite or fasterrcnn")
+    # Always wrapped, so tiling can be switched on while the service runs.
+    return TiledDetector(network, *tiles)

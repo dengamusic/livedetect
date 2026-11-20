@@ -2,14 +2,15 @@ services:
   # A stand-in network camera: plays a clip in a loop as H.264 in MPEG-TS over
   # TCP. Stop and start this container to watch the service lose and regain
   # its stream.
-  #   CAMERA_SOURCE=cv:/app/assets/drone_far.mp4   a small, distant drone
-  #   CAMERA_SOURCE=cv:/clips/yourclip.mp4         your own clip, from ./clips
-  #   CAMERA_SOURCE=synthetic                      the generated scene
+  #   CAMERA_SOURCE=cv:/app/assets/drone_tiny.mp4    a drone 7 pixels wide, for the tiles switch
+  #   CAMERA_SOURCE=cv:/app/assets/drone_close.mp4   a large drone against blue sky
+  #   CAMERA_SOURCE=cv:/clips/yourclip.mp4           your own clip, from ./clips
+  #   CAMERA_SOURCE=synthetic                        the generated scene
   camera:
     build: .
     image: livedetect:dev
     entrypoint: ["python3", "-m", "livedetect.fakecam"]
-    command: ["--source", "${CAMERA_SOURCE:-cv:/app/assets/drone_close.mp4}", "--port", "5000"]
+    command: ["--source", "${CAMERA_SOURCE:-cv:/app/assets/drone_far.mp4}", "--port", "5000"]
     volumes:
       - ./clips:/clips:ro
     healthcheck:
@@ -22,6 +23,8 @@ services:
       LIVEDETECT_SOURCE: "gst:tcpclientsrc host=camera port=5000 ! tsdemux ! h264parse ! avdec_h264"
       # drone: the ONNX drone model.  motion: anything that moves (use with synthetic).
       LIVEDETECT_DETECTOR: ${LIVEDETECT_DETECTOR:-drone}
+      # The switches on the live page. This is a demonstration; a deployment would leave them off.
+      LIVEDETECT_CONTROLS: "1"
     ports:
       - "8000:8000"
     depends_on:

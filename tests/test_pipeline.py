@@ -45,6 +45,18 @@ def test_results_are_published_to_subscribers():
     assert result is not None
     assert result.n_detections == 1
     assert result.latency_s >= result.processing_s >= 0
+    assert result.view is not None and result.view.zoom >= 1.0  # the tracking camera ran
+
+
+def test_detection_rate_counts_frames_with_and_without_a_detection():
+    class EveryOtherFrame(FakeDetector):
+        def detect(self, image):
+            found = super().detect(image)
+            return found if self.calls % 2 else []
+
+    pipeline = Pipeline(FakeSource(period_s=0.003), EveryOtherFrame())
+    snapshot = run(pipeline, lambda m: m["processed"] >= 40)
+    assert 0.3 <= snapshot["detection_rate"] <= 0.7
 
 
 def test_reconnects_when_the_stream_breaks():

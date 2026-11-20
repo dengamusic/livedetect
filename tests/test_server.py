@@ -1,13 +1,17 @@
 import json
 import time
 
+import cv2
 import numpy as np
 import pytest
 
 from helpers import FakeDetector, FakeSource
+from livedetect.controls import Controls
+from livedetect.detectors import TiledDetector
+from livedetect.faults import Faults
 from livedetect.pipeline import Pipeline
 from livedetect.server import create_app
-from livedetect.types import Frame, Result, Track
+from livedetect.types import Frame, Result, Track, View
 
 
 @pytest.fixture
@@ -27,7 +31,8 @@ def publish(pipeline: Pipeline, seq: int = 0) -> Result:
         id=1, cx=30.0, cy=20.0, w=4.0, h=4.0, vx=120.0, vy=0.0,
         score=0.9, label="moving", hits=5, coasting=False,
     )  # fmt: skip
-    result = Result(frame, (track,), n_detections=1, processing_s=0.004, latency_s=0.006)
+    view = View(cx=30.0, cy=20.0, w=32.0, h=24.0, zoom=2.0, target=1)
+    result = Result(frame, (track,), n_detections=1, processing_s=0.004, latency_s=0.006, view=view)
     pipeline.results.publish(result)
     return result
 
@@ -102,3 +107,52 @@ def test_stream_unsubscribes_when_the_client_leaves(client, pipeline):
     assert pipeline.results.subscriber_count == 1
     response.close()
     assert pipeline.results.subscriber_count == 0
+
+
+def test_tracks_include_the_frame_size_and_the_tracking_view(client, pipeline):
+    publish(pipeline)
+    body = client.get("/tracks").json
+    assert (body["width"], body["height"]) == (64, 48)
+    assert body["view"] == {"cx": 30.0, "cy": 20.0, "w": 32.0, "h": 24.0, "zoom": 2.0, "target": 1}
+
+
+def test_follow_stream_sends_the_enlarged_view(client, pipeline):
+    publish(pipeline)
+    response = client.get("/follow.mjpg")
+    chunk = next(iter(response.response))
+    response.close()
+    jpeg = chunk[chunk.index(b"\xff\xd8") :]
+    image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+    assert image.shape == (360, 480, 3)  # 480 wide, in the 4:3 shape of the 64x48 frame
+
+
+def test_a_click_is_passed_to_the_follower(client, pipeline):
+    assert client.post("/follow", json={"x": 12, "y": 34.5}).status_code == 200
+    assert pipeline.follower._requested == (12.0, 34.5)
+    assert client.post("/follow", json={"x": "left"}).status_code == 400
+    assert client.post("/follow", data="not json").status_code == 400
+
+
+def test_controls_are_absent_unless_asked_for(client):
+    assert client.get("/controls").json == {"enabled": False}
+    assert client.post("/controls", json={"camera_cut": True}).status_code == 403
+
+
+def test_controls_change_the_running_service(pipeline):
+    faults = Faults()
+    controls = Controls(pipeline, faults, TiledDetector(FakeDetector()))
+    client = create_app(pipeline, controls).test_client()
+    assert client.get("/controls").json["enabled"] is True
+
+    response = client.post("/controls", json={"camera_cut": True, "detector_delay_ms": 250})
+    assert response.status_code == 200
+    assert response.json["camera_cut"] is True and response.json["detector_delay_ms"] == 250
+    assert faults.camera_cut is True and faults.detector_delay_s == 0.25
+
+    response = client.post("/controls", json={"tiles": "banana"})
+    assert response.status_code == 400 and "3x2" in response.json["error"]
+    assert client.post("/controls", json=["camera_cut"]).status_code == 400
+
+
+def test_metrics_include_the_frames_waiting(client, pipeline):
+    assert client.get("/metrics").json["waiting"] == 0

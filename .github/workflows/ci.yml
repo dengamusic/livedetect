@@ -54,6 +54,14 @@ jobs:
             sleep 2
           done
           exit 1
+      - name: Tracking camera and switches answer
+        run: |
+          curl -fsS http://localhost:8000/tracks | grep -E '"zoom": ?[0-9.]+'
+          curl -fsS -o /dev/null http://localhost:8000/follow.mjpg --max-time 3 || test $? = 28  # a stream: stopped by the time limit, not an error
+          curl -fsS -X POST -H 'Content-Type: application/json' -d '{"tiles": "3x2"}' \
+            http://localhost:8000/controls | grep -E '"tiles": ?"3x2"'
+          curl -fsS -X POST -H 'Content-Type: application/json' -d '{"tiles": "1x1"}' \
+            http://localhost:8000/controls | grep -E '"tiles": ?"1x1"'
       - name: Service reports a lost camera
         run: |
           docker compose stop camera
