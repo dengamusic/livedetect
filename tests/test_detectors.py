@@ -1,9 +1,19 @@
 import math
+from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
-from livedetect.detectors import MotionDetector, TorchvisionDetector, make_detector
+from livedetect.detectors import (
+    MotionDetector,
+    OnnxYoloDetector,
+    TorchvisionDetector,
+    decode_yolo,
+    letterbox,
+    make_detector,
+)
+from livedetect.models import MODELS, cache_dir
 from livedetect.sources import SyntheticSource
 from livedetect.types import Detection
 
@@ -52,3 +62,60 @@ def test_torchvision_detector_returns_well_formed_detections():
     detections = detector.detect(np.zeros((240, 320, 3), np.uint8))
     assert all(isinstance(d, Detection) for d in detections)
     assert all(0.0 <= d.score <= 1.0 and d.w >= 0 and d.h >= 0 for d in detections)
+
+
+# --- ONNX / YOLO -------------------------------------------------------------
+
+
+def test_letterbox_pads_to_a_square_and_reports_the_mapping():
+    image = np.zeros((360, 640, 3), np.uint8)
+    canvas, scale, left, top = letterbox(image, 416)
+    assert canvas.shape == (416, 416, 3)
+    assert scale == pytest.approx(0.65) and (left, top) == (0, 91)
+    assert (canvas[0] == 114).all()  # padding above the image
+    assert (canvas[208] == 0).all()  # the image itself
+
+
+def test_decode_yolo_maps_boxes_back_and_keeps_one_box_per_object():
+    # A 640x360 image letterboxed into 416: scale 0.65, 91 pixels of padding on top.
+    rows = np.array(
+        [
+            # cx,  cy,   w,  h, objectness, class score
+            [208, 208, 26, 13, 0.9, 0.9],  # a drone in the middle of the image
+            [209, 208, 26, 13, 0.8, 0.9],  # the same drone again, less confident
+            [65, 130, 13, 13, 0.9, 1.0],  # a second drone
+            [300, 300, 10, 10, 0.2, 0.5],  # too weak to report
+        ],
+        np.float32,
+    )
+    detections = decode_yolo(rows, 0.65, 0, 91, 0.4, 0.45, {0: "drone"})
+    detections.sort(key=lambda d: d.cx)
+    assert [d.label for d in detections] == ["drone", "drone"]
+    second, middle = detections
+    assert (second.cx, second.cy) == pytest.approx((100, 60))
+    assert (middle.cx, middle.cy, middle.w, middle.h) == pytest.approx((320, 180, 40, 20))
+    assert middle.score == pytest.approx(0.81)
+
+
+def test_decode_yolo_returns_nothing_when_nothing_is_confident():
+    rows = np.array([[100, 100, 10, 10, 0.1, 0.9]], np.float32)
+    assert decode_yolo(rows, 1.0, 0, 0, 0.4, 0.45, {0: "drone"}) == []
+
+
+def test_drone_model_finds_the_drone_in_the_bundled_clip():
+    """Runs only where the model is already downloaded: `python -m livedetect.models`."""
+    pytest.importorskip("onnxruntime")
+    model = cache_dir() / MODELS["drone"].filename
+    clip = Path(__file__).parent.parent / "assets" / "drone_close.mp4"
+    if not model.exists():
+        pytest.skip("drone model is not in the cache")
+    detector = OnnxYoloDetector(model)
+    video = cv2.VideoCapture(str(clip))
+    hits = []
+    for index in range(600):  # the first 20 seconds; the drone is in view throughout
+        ok, frame = video.read()
+        assert ok
+        if index % 15 == 0:
+            detections = detector.detect(frame)
+            hits.append(len(detections) == 1 and detections[0].label == "drone")
+    assert sum(hits) / len(hits) >= 0.9

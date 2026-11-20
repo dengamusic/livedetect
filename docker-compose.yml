@@ -1,11 +1,15 @@
 services:
-  # A stand-in network camera: H.264 in MPEG-TS over TCP. Stop and start this
-  # container to watch the service lose and regain its stream.
+  # A stand-in network camera: plays a clip in a loop as H.264 in MPEG-TS over
+  # TCP. Stop and start this container to watch the service lose and regain
+  # its stream.
+  #   CAMERA_SOURCE=cv:/app/assets/drone_far.mp4   a small, distant drone
+  #   CAMERA_SOURCE=cv:/clips/yourclip.mp4         your own clip, from ./clips
+  #   CAMERA_SOURCE=synthetic                      the generated scene
   camera:
     build: .
     image: livedetect:dev
     entrypoint: ["python3", "-m", "livedetect.fakecam"]
-    command: ["--source", "${CAMERA_SOURCE:-synthetic}", "--port", "5000"]
+    command: ["--source", "${CAMERA_SOURCE:-cv:/app/assets/drone_close.mp4}", "--port", "5000"]
     volumes:
       - ./clips:/clips:ro
     healthcheck:
@@ -16,7 +20,8 @@ services:
     image: livedetect:dev
     environment:
       LIVEDETECT_SOURCE: "gst:tcpclientsrc host=camera port=5000 ! tsdemux ! h264parse ! avdec_h264"
-      LIVEDETECT_DETECTOR: ${LIVEDETECT_DETECTOR:-motion}
+      # drone: the ONNX drone model.  motion: anything that moves (use with synthetic).
+      LIVEDETECT_DETECTOR: ${LIVEDETECT_DETECTOR:-drone}
     ports:
       - "8000:8000"
     depends_on:

@@ -7,6 +7,8 @@ different model is one new class.
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from typing import Protocol
 
 import cv2
@@ -138,9 +140,110 @@ class TorchvisionDetector:
         return detections
 
 
+class OnnxYoloDetector:
+    """A YOLOv5-format network exported to ONNX, run with onnxruntime.
+
+    ONNX is the hand-off format between training (PyTorch) and deployment: the
+    file holds the network and its weights, and the runtime needs neither
+    PyTorch nor the training code.
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        score_threshold: float = 0.4,
+        overlap_threshold: float = 0.45,
+        threads: int = 0,  # 0 lets the runtime use every core
+    ) -> None:
+        import onnxruntime
+
+        options = onnxruntime.SessionOptions()
+        options.intra_op_num_threads = threads
+        self._session = onnxruntime.InferenceSession(
+            str(path), options, providers=["CPUExecutionProvider"]
+        )
+        network_input = self._session.get_inputs()[0]
+        self._input_name = network_input.name
+        self._size = int(network_input.shape[2])  # square input, e.g. 416
+        # The exporter stores the class names as text: "{0: 'drone'}".
+        names = self._session.get_modelmeta().custom_metadata_map.get("names", "{}")
+        self._labels: dict[int, str] = ast.literal_eval(names)
+        self.score_threshold = score_threshold
+        self.overlap_threshold = overlap_threshold
+
+    def detect(self, image: np.ndarray) -> list[Detection]:
+        canvas, scale, left, top = letterbox(image, self._size)
+        rgb = canvas[:, :, ::-1].transpose(2, 0, 1)  # BGR, HWC -> RGB, CHW
+        batch = np.ascontiguousarray(rgb, dtype=np.float32)[None] / 255.0
+        (output,) = self._session.run(None, {self._input_name: batch})
+        return decode_yolo(
+            output[0], scale, left, top, self.score_threshold, self.overlap_threshold, self._labels
+        )
+
+
+def letterbox(image: np.ndarray, size: int) -> tuple[np.ndarray, float, int, int]:
+    """Fit `image` into a size x size square without distorting it.
+
+    Returns the padded square, the scale applied, and the left and top padding,
+    which is what is needed to map boxes back onto the original image.
+    """
+    height, width = image.shape[:2]
+    scale = size / max(height, width)
+    new_width, new_height = round(width * scale), round(height * scale)
+    left, top = (size - new_width) // 2, (size - new_height) // 2
+    canvas = np.full((size, size, 3), 114, np.uint8)  # grey, as in YOLO training
+    canvas[top : top + new_height, left : left + new_width] = cv2.resize(
+        image, (new_width, new_height), interpolation=cv2.INTER_LINEAR
+    )
+    return canvas, scale, left, top
+
+
+def decode_yolo(
+    rows: np.ndarray,
+    scale: float,
+    left: int,
+    top: int,
+    score_threshold: float,
+    overlap_threshold: float,
+    labels: dict[int, str],
+) -> list[Detection]:
+    """Turn raw YOLOv5 output into detections in original-image pixels.
+
+    Each row is one candidate box: centre x, centre y, width, height,
+    objectness, then one score per class, in letterboxed coordinates. The
+    network emits thousands of them, many on the same object, so the last step
+    keeps only the best box of each overlapping group.
+    """
+    class_ids = rows[:, 5:].argmax(axis=1)
+    scores = rows[:, 4] * rows[np.arange(len(rows)), 5 + class_ids]
+    keep = scores >= score_threshold
+    rows, scores, class_ids = rows[keep], scores[keep], class_ids[keep]
+    if len(rows) == 0:
+        return []
+    cx, cy = (rows[:, 0] - left) / scale, (rows[:, 1] - top) / scale
+    w, h = rows[:, 2] / scale, rows[:, 3] / scale
+    corners = np.stack([cx - w / 2, cy - h / 2, w, h], axis=1)
+    best = cv2.dnn.NMSBoxes(corners.tolist(), scores.tolist(), score_threshold, overlap_threshold)
+    return [
+        Detection(
+            float(cx[i]),
+            float(cy[i]),
+            float(w[i]),
+            float(h[i]),
+            float(scores[i]),
+            labels.get(int(class_ids[i]), "object"),
+        )  # fmt: skip
+        for i in np.asarray(best).flatten()
+    ]
+
+
 def make_detector(name: str, score_threshold: float = 0.4) -> Detector:
     if name == "motion":
         return MotionDetector()
+    if name == "drone":
+        from livedetect.models import fetch
+
+        return OnnxYoloDetector(fetch("drone"), score_threshold=score_threshold)
     if name in TorchvisionDetector._MODELS:
         return TorchvisionDetector(model=name, score_threshold=score_threshold)
-    raise ValueError(f"unknown detector {name!r}; choose motion, ssdlite or fasterrcnn")
+    raise ValueError(f"unknown detector {name!r}; choose motion, drone, ssdlite or fasterrcnn")

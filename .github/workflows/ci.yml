@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # Lint and the full test suite, with GStreamer installed so the
+  # stream-reading tests and the camera kill-and-restart test run too.
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GStreamer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3-venv python3-gi gir1.2-gstreamer-1.0 \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav
+      - name: Install the project
+        # The system Python, because that is the one GStreamer's bindings belong to.
+        run: |
+          /usr/bin/python3 -m venv --system-site-packages .venv
+          .venv/bin/pip install -e ".[dev,onnx]"
+      - name: Download the drone model
+        run: .venv/bin/python -m livedetect.models
+      - name: Lint
+        run: |
+          .venv/bin/ruff check .
+          .venv/bin/ruff format --check .
+      - name: Test
+        run: .venv/bin/pytest -v
+
+  # Builds the image and plays the demo: start both containers, take the
+  # camera away, bring it back.
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start
+        run: docker compose up --build -d
+      - name: Service becomes healthy
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/healthz; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+      - name: Service tracks the drone in the clip
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/tracks | grep -E '"label": ?"drone"'; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+      - name: Service reports a lost camera
+        run: |
+          docker compose stop camera
+          sleep 3
+          status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/healthz)
+          echo "healthz returned $status"
+          test "$status" = 503
+      - name: Service recovers when the camera returns
+        run: |
+          docker compose start camera
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/healthz; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+      - name: Logs
+        if: always()
+        run: docker compose logs --tail 100

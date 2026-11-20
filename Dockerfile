@@ -20,13 +20,19 @@ ENV PATH=/opt/venv/bin:$PATH
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY assets ./assets
 
 # Build with --build-arg WITH_TORCH=1 to include the PyTorch detectors (CPU wheels).
 ARG WITH_TORCH=0
-RUN pip install --no-cache-dir . \
+RUN pip install --no-cache-dir ".[onnx]" \
     && if [ "$WITH_TORCH" = "1" ]; then \
          pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu; \
        fi
+
+# Fetch the drone model at build time (pinned revision, checksum verified), so
+# the container needs no network when it runs.
+ENV LIVEDETECT_CACHE=/opt/livedetect-models
+RUN python3 -m livedetect.models
 
 RUN useradd --create-home app
 USER app

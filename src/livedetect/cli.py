@@ -37,8 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--detector",
         default=_env("DETECTOR", "motion"),
-        choices=["motion", "ssdlite", "fasterrcnn"],
-        help="motion needs no model; the other two need the torch extra",
+        choices=["motion", "drone", "ssdlite", "fasterrcnn"],
+        help="motion needs no model; drone downloads an ONNX model (onnx extra); "
+        "ssdlite and fasterrcnn are general-purpose PyTorch models (torch extra)",
     )
     parser.add_argument("--score-threshold", type=float, default=float(_env("SCORE", "0.4")))
     parser.add_argument("--host", default=_env("HOST", "127.0.0.1"))
